@@ -50,14 +50,34 @@ function makeRequest(server, method, path, headers = {}, body = null) {
 
 test('Proton Mail OTP & Cloud Library Routes', async (t) => {
   process.env.NODE_ENV = 'test'
-  process.env.ALLOW_DEV_CONSOLE_OTP = 'true'
   process.env.JWT_SECRET = 'test-secret-proton-auth-1234567890'
+  process.env.RESEND_API_KEY = 're_test_mock_api_key_12345'
+  process.env.RESEND_FROM_EMAIL = 'MUSICA <onboarding@resend.dev>'
+
+  // Mock globalThis.fetch for Resend API calls
+  const originalFetch = globalThis.fetch
+  let resendMockResponse = {
+    ok: true,
+    status: 200,
+    text: async () => JSON.stringify({ id: 'msg_resend_mock_id_999' }),
+    json: async () => ({ id: 'msg_resend_mock_id_999' }),
+  }
+
+  globalThis.fetch = async (url, options) => {
+    if (String(url).includes('api.resend.com')) {
+      return resendMockResponse
+    }
+    return originalFetch(url, options)
+  }
 
   const app = createApp()
   const server = http.createServer(app)
 
   await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve))
-  t.after(() => server.close())
+  t.after(() => {
+    server.close()
+    globalThis.fetch = originalFetch
+  })
 
   await t.test('POST /api/auth/proton/send-otp rejects non-Proton emails', async () => {
     const res = await makeRequest(server, 'POST', '/api/auth/proton/send-otp', {}, {
@@ -68,7 +88,51 @@ test('Proton Mail OTP & Cloud Library Routes', async (t) => {
     assert.equal(res.body.error, 'invalid_email')
   })
 
-  await t.test('POST /api/auth/proton/send-otp accepts valid Proton email', async () => {
+  await t.test('POST /api/auth/proton/send-otp fails when RESEND_API_KEY is missing', async () => {
+    const savedKey = process.env.RESEND_API_KEY
+    delete process.env.RESEND_API_KEY
+    const res = await makeRequest(server, 'POST', '/api/auth/proton/send-otp', {}, {
+      email: 'missing.key@proton.me',
+    })
+    process.env.RESEND_API_KEY = savedKey
+    assert.equal(res.status, 503)
+    assert.equal(res.body.success, false)
+    assert.equal(res.body.error, 'resend_key_missing')
+  })
+
+  await t.test('POST /api/auth/proton/send-otp does not return success when Resend rejects (403 Forbidden)', async () => {
+    resendMockResponse = {
+      ok: false,
+      status: 403,
+      text: async () => JSON.stringify({
+        statusCode: 403,
+        name: 'validation_error',
+        message: 'You can only send testing emails to your own email address (adharshm38@gmail.com). To send to other domains, please verify a domain at resend.com/domains',
+      }),
+      json: async () => ({
+        statusCode: 403,
+        name: 'validation_error',
+        message: 'You can only send testing emails to your own email address (adharshm38@gmail.com). To send to other domains, please verify a domain at resend.com/domains',
+      }),
+    }
+
+    const res = await makeRequest(server, 'POST', '/api/auth/proton/send-otp', {}, {
+      email: 'unverified@proton.me',
+    })
+    assert.equal(res.status, 403)
+    assert.equal(res.body.success, false)
+    assert.equal(res.body.error, 'validation_error')
+    assert.ok(res.body.message.includes('verify a domain'))
+  })
+
+  await t.test('POST /api/auth/proton/send-otp accepts valid Proton email when Resend succeeds', async () => {
+    resendMockResponse = {
+      ok: true,
+      status: 200,
+      text: async () => JSON.stringify({ id: 'msg_success_abc123' }),
+      json: async () => ({ id: 'msg_success_abc123' }),
+    }
+
     const res = await makeRequest(server, 'POST', '/api/auth/proton/send-otp', {}, {
       email: 'musica.tester@proton.me',
     })
@@ -76,6 +140,7 @@ test('Proton Mail OTP & Cloud Library Routes', async (t) => {
     assert.equal(res.body.success, true)
     assert.equal(res.body.cooldownSeconds, 60)
     assert.equal(res.body.expiresInSeconds, 600)
+    assert.equal(res.body.messageId, 'msg_success_abc123')
   })
 
   await t.test('POST /api/auth/proton/send-otp triggers cooldown on immediate retry', async () => {
@@ -99,25 +164,24 @@ test('Proton Mail OTP & Cloud Library Routes', async (t) => {
     assert.equal(res.body.remainingAttempts, 4)
   })
 
-  await t.test('POST /api/auth/proton/verify-otp succeeds and returns token and user', async () => {
-    // Send OTP to get fresh code
-    let capturedCode = null
-    const origLog = console.log
-    const origWarn = console.warn
-    console.warn = (msg) => {
-      const match = String(msg).match(/OTP for .+ is: (\d{6})/)
-      if (match) capturedCode = match[1]
-    }
-
-    // Reset cooldown by using a new email
-    const testEmail = 'musica.success@proton.me'
+  await t.test('POST /api/auth/proton/verify-otp succeeds with token, profile, and library sync', async () => {
+    // Send to a new email to avoid cooldown
+    const testEmail = 'musica.flow@proton.me'
     await makeRequest(server, 'POST', '/api/auth/proton/send-otp', {}, { email: testEmail })
-    console.warn = origWarn
-    assert.ok(capturedCode, 'Captured OTP code')
+
+    // Find the in-memory OTP record to test verification with valid hash
+    const { memoryOtps } = await import('../src/controllers/protonAuth.controller.js')
+    const record = memoryOtps.get(testEmail)
+    assert.ok(record, 'Memory OTP record exists')
+
+    // Generate known valid hash
+    const crypto = await import('node:crypto')
+    const validCode = '882244'
+    record.codeHash = crypto.default.createHmac('sha256', record.salt).update(validCode).digest('hex')
 
     const res = await makeRequest(server, 'POST', '/api/auth/proton/verify-otp', {}, {
       email: testEmail,
-      code: capturedCode,
+      code: validCode,
     })
     assert.equal(res.status, 200)
     assert.equal(res.body.success, true)

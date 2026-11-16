@@ -59,13 +59,23 @@ function hashOtp(code, salt) {
 }
 
 async function sendOtpEmail(email, code) {
-  const apiKey = process.env.RESEND_API_KEY || ''
-  const fromEmail = process.env.RESEND_FROM_EMAIL || 'MUSICA <onboarding@resend.dev>'
+  const apiKey = (process.env.RESEND_API_KEY || '').trim()
+  const fromEmail = (process.env.RESEND_FROM_EMAIL || 'MUSICA <onboarding@resend.dev>').trim()
+  const recipient = (email || '').trim().toLowerCase()
 
+  // 1. Verify RESEND_API_KEY is present without printing or exposing its value
   if (!apiKey) {
-    console.warn(`[Resend] RESEND_API_KEY not configured. OTP for ${email} is: ${code}`)
-    return { success: true, simulated: true }
+    console.error('[Resend] Delivery aborted: RESEND_API_KEY is not configured in backend environment.')
+    return {
+      ok: false,
+      status: 503,
+      error: 'resend_key_missing',
+      message: 'Email delivery service is not configured (RESEND_API_KEY missing on server).',
+    }
   }
+
+  // 2. Check and log configured sender and recipient without leaking secrets
+  console.log(`[Resend] Dispatching verification email from "${fromEmail}" to "${recipient}"`)
 
   try {
     const htmlBody = `
@@ -102,7 +112,7 @@ async function sendOtpEmail(email, code) {
 
     const payload = JSON.stringify({
       from: fromEmail,
-      to: [email],
+      to: [recipient],
       subject: `Your MUSICA verification code: ${code}`,
       html: htmlBody,
     })
@@ -116,20 +126,41 @@ async function sendOtpEmail(email, code) {
       body: payload,
     })
 
-    if (!res.ok) {
-      const errorText = await res.text()
-      console.error(`[Resend] Failed to send email via Resend (${res.status}): ${errorText}`)
-      console.warn(`[Resend] Fallback OTP code for ${email} is: ${code}`)
-      return { success: true, fallback: true }
+    const resText = await res.text()
+    let resData = null
+    try {
+      resData = JSON.parse(resText)
+    } catch {
+      resData = { message: resText }
     }
 
-    const data = await res.json()
-    console.log(`[Resend] Verification code sent successfully to ${email}. ID:`, data.id)
-    return { success: true, id: data.id }
+    if (!res.ok) {
+      const status = res.status
+      const errName = resData?.name || 'ResendError'
+      const errMsg = resData?.message || resText || `HTTP ${status}`
+      console.error(`[Resend] Resend API error (${status} ${errName}): ${errMsg}`)
+      return {
+        ok: false,
+        status: status === 403 ? 403 : 502,
+        error: errName,
+        message: errMsg,
+      }
+    }
+
+    const messageId = resData?.id || 'unknown'
+    console.log(`[Resend] Email accepted by Resend. Message ID: ${messageId}`)
+    return {
+      ok: true,
+      id: messageId,
+    }
   } catch (err) {
-    console.warn(`[Resend] Email dispatch error for ${email}:`, err.message)
-    console.warn(`[Resend] Fallback OTP code for ${email} is: ${code}`)
-    return { success: true, fallback: true }
+    console.error('[Resend] Email dispatch error:', err.message)
+    return {
+      ok: false,
+      status: 502,
+      error: 'network_error',
+      message: `Failed to connect to Resend API: ${err.message}`,
+    }
   }
 }
 
@@ -198,10 +229,17 @@ export const sendOtp = asyncHandler(async (req, res) => {
   const expiresAt = new Date(now + OTP_EXPIRY_MS)
   const lastSentAt = new Date(now)
 
-  // Dispatch email
-  await sendOtpEmail(email, code)
+  // Dispatch email via Resend
+  const sendResult = await sendOtpEmail(email, code)
+  if (!sendResult.ok) {
+    return res.status(sendResult.status || 502).json({
+      success: false,
+      error: sendResult.error || 'email_delivery_failed',
+      message: sendResult.message || 'Failed to dispatch verification email via Resend.',
+    })
+  }
 
-  // Persist OTP
+  // Persist OTP only after Resend confirms the email was accepted
   const record = {
     email,
     codeHash,
@@ -209,6 +247,7 @@ export const sendOtp = asyncHandler(async (req, res) => {
     attempts: 0,
     lastSentAt,
     expiresAt,
+    messageId: sendResult.id,
   }
 
   if (isMongoConnected()) {
@@ -227,6 +266,7 @@ export const sendOtp = asyncHandler(async (req, res) => {
     message: 'Verification code sent to your Proton email.',
     cooldownSeconds: 60,
     expiresInSeconds: 600,
+    messageId: sendResult.id,
   })
 })
 

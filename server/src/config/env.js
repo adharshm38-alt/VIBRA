@@ -42,6 +42,12 @@ export const config = {
   maxAudioSizeMb: Number(process.env.MAX_AUDIO_SIZE_MB) || 25,
   maxImageSizeMb: Number(process.env.MAX_IMAGE_SIZE_MB) || 5,
 
+  // Resend Email Integration
+  resend: {
+    apiKey: (process.env.RESEND_API_KEY || '').trim(),
+    fromEmail: (process.env.RESEND_FROM_EMAIL || 'onboarding@resend.dev').trim(),
+  },
+
   /**
    * Whether first-party uploads are accepted.
    *

@@ -16,7 +16,15 @@ const router = Router()
 
 // Small health check - handy for verifying the backend is up.
 router.get('/health', (_req, res) => {
-  res.json({ success: true, data: { status: 'ok', uptime: process.uptime() } })
+  res.json({
+    success: true,
+    data: {
+      status: 'ok',
+      uptime: process.uptime(),
+      resendConfigured: Boolean(config.resend?.apiKey),
+      resendFrom: config.resend?.fromEmail || 'onboarding@resend.dev',
+    },
+  })
 })
 
 /**
