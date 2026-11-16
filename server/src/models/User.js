@@ -33,9 +33,16 @@ const userSchema = new mongoose.Schema(
     // Never returned to clients unless explicitly selected.
     password: {
       type: String,
-      required: [true, 'Password is required'],
+      required: function () {
+        return this.authProvider === 'local'
+      },
       minlength: [8, 'Password must be at least 8 characters'],
       select: false, // excluded from queries by default
+    },
+    authProvider: {
+      type: String,
+      enum: ['local', 'proton', 'google'],
+      default: 'local',
     },
     avatarUrl: { type: String, default: '' },
     bio: { type: String, default: '', maxlength: 300 },
@@ -61,6 +68,7 @@ const userSchema = new mongoose.Schema(
       transform(_doc, ret) {
         delete ret.password
         delete ret.__v
+        ret.id = ret._id.toString()
         return ret
       },
     },
@@ -69,7 +77,7 @@ const userSchema = new mongoose.Schema(
 
 /** Hash password whenever it is set or changed. */
 userSchema.pre('save', async function hashPassword(next) {
-  if (!this.isModified('password')) return next()
+  if (!this.password || !this.isModified('password')) return next()
   try {
     this.password = await bcrypt.hash(this.password, SALT_ROUNDS)
     next()

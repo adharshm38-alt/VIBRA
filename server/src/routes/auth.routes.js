@@ -2,6 +2,7 @@ import { Router } from 'express'
 import rateLimit from 'express-rate-limit'
 import { body } from 'express-validator'
 import * as auth from '../controllers/auth.controller.js'
+import * as protonAuth from '../controllers/protonAuth.controller.js'
 import { requireAuth } from '../middleware/auth.js'
 import { validate } from '../middleware/validate.js'
 import { uploadAvatar, handleUploadErrors } from '../middleware/upload.js'
@@ -79,5 +80,13 @@ router.put(
 
 // DELETE /api/auth/account
 router.delete('/account', requireAuth, auth.deleteAccount)
+
+// --- Proton Mail Passwordless OTP Authentication ---
+
+// POST /api/auth/proton/send-otp
+router.post('/proton/send-otp', protonAuth.sendOtp)
+
+// POST /api/auth/proton/verify-otp
+router.post('/proton/verify-otp', protonAuth.verifyOtp)
 
 export default router

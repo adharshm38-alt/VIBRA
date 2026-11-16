@@ -2,6 +2,7 @@ import { Router } from 'express'
 import config from '../config/env.js'
 import authRoutes from './auth.routes.js'
 import userRoutes from './user.routes.js'
+import userCloudRoutes from './userCloud.routes.js'
 import songRoutes from './song.routes.js'
 import playlistRoutes from './playlist.routes.js'
 import searchRoutes from './search.routes.js'
@@ -39,6 +40,7 @@ router.get('/config', (_req, res) => {
 })
 
 router.use('/auth', authRoutes)
+router.use('/user', userCloudRoutes)
 router.use('/users', userRoutes)
 router.use('/songs', songRoutes)
 router.use('/playlists', playlistRoutes)

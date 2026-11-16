@@ -1,7 +1,9 @@
+import mongoose from 'mongoose'
 import User from '../models/User.js'
 import ApiError from '../utils/ApiError.js'
 import asyncHandler from '../utils/asyncHandler.js'
 import { verifyToken } from '../services/token.service.js'
+import { memoryUsers } from '../controllers/protonAuth.controller.js'
 
 /** Pulls the raw JWT out of the Authorization header or the auth cookie. */
 function extractToken(req) {
@@ -43,7 +45,18 @@ export const requireAuth = asyncHandler(async (req, _res, next) => {
     throw ApiError.unauthorized(error.name === 'TokenExpiredError' ? 'Your session expired, please log in again' : 'Invalid session, please log in again')
   }
 
-  const user = await User.findById(payload.sub)
+  let user = null
+  if (mongoose.connection?.readyState === 1 && mongoose.isValidObjectId(payload.sub)) {
+    try {
+      user = await User.findById(payload.sub)
+    } catch {
+      user = null
+    }
+  }
+  if (!user && memoryUsers?.has(payload.sub)) {
+    user = memoryUsers.get(payload.sub)
+  }
+
   if (!user) throw ApiError.unauthorized('Your account no longer exists')
   if (!user.isActive) throw ApiError.forbidden('This account has been deactivated')
 
